@@ -129,8 +129,8 @@ public final class BridgeSession {
 
     /**
      * Safely decodes an MCPE 1.1.5 packet.
-     * Catches ArrayIndexOutOfBoundsException from malformed 3DS 1.10 AddHangingEntityPacket (0x10)
-     * or unknown 3DS packets so they never spam the console or disconnect the player.
+     * Catches IndexOutOfBoundsException (including ArrayIndexOutOfBoundsException) from malformed
+     * 3DS 1.10 AddHangingEntityPacket (0x10) or unknown 3DS packets so they never spam the console or disconnect the player.
      */
     private void handleMcpePacketSafely(ByteBuf buf) {
         if (!buf.isReadable()) {
@@ -179,7 +179,7 @@ public final class BridgeSession {
                     }
                     break;
             }
-        } catch (ArrayIndexOutOfBoundsException | IndexOutOfBoundsException | IllegalArgumentException ex) {
+        } catch (IndexOutOfBoundsException | IllegalArgumentException ex) {
             if (config.isDebugPackets()) {
                 logger.warning("[MiniSMPBridge] Safely caught malformed 3DS packet 0x"
                         + Integer.toHexString(packetId) + " from " + username + ": " + ex.getMessage());
