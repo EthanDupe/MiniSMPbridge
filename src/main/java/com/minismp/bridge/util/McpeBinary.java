@@ -1,10 +1,10 @@
 package com.minismp.bridge.util;
 
+import com.minismp.bridge.mcpe.McpeProtocol;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 import java.util.zip.DataFormatException;
