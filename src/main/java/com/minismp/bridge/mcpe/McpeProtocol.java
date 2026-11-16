@@ -1,7 +1,7 @@
 package com.minismp.bridge.mcpe;
 
 /**
- * MCPE 1.1.5 / Minecraft 3DS 1.10 (Protocol 113) constants from Nukkit-Retro.
+ * MCPE 1.1.3 / 1.1.5 / Minecraft 3DS 1.10 (Protocol 113) constants from Nukkit-Retro.
  */
 public final class McpeProtocol {
 
@@ -9,8 +9,9 @@ public final class McpeProtocol {
     }
 
     public static final int PROTOCOL_VERSION = 113;
-    public static final String MINECRAFT_VERSION = "1.1.5";
+    public static final String MINECRAFT_VERSION = "1.1.3";
     public static final int RAKNET_PROTOCOL_VERSION = 6;
+    public static final int[] SUPPORTED_RAKNET_PROTOCOLS = new int[]{6, 7, 8};
 
     public static final byte[] RAKNET_MAGIC = new byte[]{
             0x00, (byte) 0xff, (byte) 0xff, 0x00,
@@ -19,7 +20,7 @@ public final class McpeProtocol {
             0x12, 0x34, 0x56, 0x78
     };
 
-    // MCPE 1.1.3 / 1.1.5 Packet IDs
+    // MCPE 1.1.3 / 1.1.5 Packet IDs (inside BatchPacket)
     public static final int LOGIN_PACKET = 0x01;
     public static final int PLAY_STATUS_PACKET = 0x02;
     public static final int SERVER_TO_CLIENT_HANDSHAKE_PACKET = 0x03;
@@ -81,7 +82,9 @@ public final class McpeProtocol {
     public static final int PLAYER_LIST_PACKET = 0x3f;
     public static final int REQUEST_CHUNK_RADIUS_PACKET = 0x45;
     public static final int CHUNK_RADIUS_UPDATED_PACKET = 0x46;
-    public static final int BATCH_PACKET = 0xff;
+
+    // Outer RakNet game packet wrapper byte used by MCPE 0.15 - 1.1.x (0xFE)
+    public static final int RAKNET_GAME_PACKET_WRAPPER = 0xfe;
 
     // PlayStatus values
     public static final int PLAY_STATUS_LOGIN_SUCCESS = 0;
