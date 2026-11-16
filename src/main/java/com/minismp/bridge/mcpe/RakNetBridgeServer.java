@@ -52,7 +52,7 @@ public final class RakNetBridgeServer {
                 .group(rakGroup)
                 .channelFactory(RakChannelFactory.server(NioDatagramChannel.class))
                 .option(RakChannelOption.RAK_GUID, serverGuid)
-                .option(RakChannelOption.RAK_SUPPORTED_PROTOCOLS, new int[]{McpeProtocol.RAKNET_PROTOCOL_VERSION})
+                .option(RakChannelOption.RAK_SUPPORTED_PROTOCOLS, McpeProtocol.SUPPORTED_RAKNET_PROTOCOLS)
                 .option(RakChannelOption.RAK_UNCONNECTED_MAGIC, Unpooled.wrappedBuffer(McpeProtocol.RAKNET_MAGIC))
                 .option(RakChannelOption.RAK_SERVER_COOKIE_MODE, RakServerCookieMode.ACTIVE)
                 .option(RakChannelOption.RAK_MAX_CONNECTIONS, config.getMaxPlayers())
@@ -83,14 +83,17 @@ public final class RakNetBridgeServer {
         }
     }
 
+    /**
+     * Exact 6-field advertisement format from Nukkit-Retro TransportRakNetInterface.createAdvertisement:
+     * "MCPE;<motd>;113;1.1.3;<online>;<max>"
+     */
     private ByteBuf buildAdvertisement(int onlinePlayers) {
         String cleanMotd = config.getMotd().replace(";", "\\;");
         String adv = "MCPE;" + cleanMotd + ";"
                 + McpeProtocol.PROTOCOL_VERSION + ";"
                 + McpeProtocol.MINECRAFT_VERSION + ";"
                 + onlinePlayers + ";"
-                + config.getMaxPlayers() + ";"
-                + serverGuid + ";MiniSMP;Survival";
+                + config.getMaxPlayers();
         return Unpooled.wrappedBuffer(adv.getBytes(StandardCharsets.UTF_8));
     }
 
