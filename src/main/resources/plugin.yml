@@ -1,0 +1,15 @@
+name: MiniSMPBridge
+version: ${project.version}
+main: com.minismp.bridge.MiniSMPBridgePlugin
+api-version: 1.12
+author: MiniSMP
+description: Bridges Minecraft 3DS 1.10 (MCPE 1.1.5 / RakNet 113) clients to PaperSpigot 1.12.2 (TCP 340).
+commands:
+  minismpbridge:
+    description: Show MiniSMPBridge status and active 3DS sessions.
+    usage: /minismpbridge [status|reload]
+    permission: minismpbridge.admin
+permissions:
+  minismpbridge.admin:
+    description: Allows managing MiniSMPBridge.
+    default: op

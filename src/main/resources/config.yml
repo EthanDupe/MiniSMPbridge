@@ -1,0 +1,25 @@
+# MiniSMPBridge Configuration
+# Designed for FalixNodes 1 GB RAM shared TCP/UDP port hosting
+
+# UDP port for incoming Minecraft 3DS 1.10 (MCPE 1.1.5 / protocol 113) connections
+udp-bind-ip: "0.0.0.0"
+udp-port: 25318
+
+# Local PaperSpigot 1.12.2 TCP server target (protocol 340, online-mode=false)
+target-host: "127.0.0.1"
+target-port: 25318
+
+# Server list MOTD shown on Minecraft 3DS
+motd: "§l§bMiniSMP §r§7- §aNow Available! §6[v1.0]"
+
+# Maximum concurrent 3DS players advertised in RakNet ping
+max-players: 20
+
+# View distance cap for 3DS clients (kept low for 1 GB RAM stability)
+max-view-distance: 6
+
+# Zlib batch compression level (1 = fast / low CPU, 6 = balanced)
+compression-level: 4
+
+# Enable verbose packet debug logging (keep false in production)
+debug-packets: false
