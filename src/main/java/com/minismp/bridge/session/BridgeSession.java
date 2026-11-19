@@ -91,7 +91,16 @@ public final class BridgeSession {
             // RakNet connected ping
             return;
         }
-        if (header == McpeProtocol.BATCH_PACKET) {
+        if (header == McpeProtocol.RAKNET_GAME_PACKET_WRAPPER || header == 0xff) {
+            if (content.readableBytes() >= 6) {
+                int firstByte = content.getUnsignedByte(content.readerIndex());
+                int possibleProtocol = content.getInt(content.readerIndex() + 1);
+                if (firstByte == McpeProtocol.LOGIN_PACKET && possibleProtocol >= 90 && possibleProtocol <= 120) {
+                    handleMcpePacketSafely(content);
+                    return;
+                }
+            }
+
             byte[] compressed = new byte[content.readableBytes()];
             content.readBytes(compressed);
             byte[] inflated;
@@ -121,7 +130,6 @@ public final class BridgeSession {
                 batchBuf.release();
             }
         } else {
-            // Uncompressed single packet fallback
             content.readerIndex(content.readerIndex() - 1);
             handleMcpePacketSafely(content);
         }
@@ -137,6 +145,10 @@ public final class BridgeSession {
             return;
         }
         int packetId = buf.readUnsignedByte();
+        if (packetId >= 0x80) {
+            buf.readerIndex(buf.readerIndex() - 1);
+            packetId = (int) (McpeBinary.readUnsignedVarInt(buf) & 0x3FF);
+        }
         try {
             switch (packetId) {
                 case McpeProtocol.LOGIN_PACKET:
@@ -167,8 +179,6 @@ public final class BridgeSession {
                     handleMcpeRespawn();
                     break;
                 case McpeProtocol.ADD_HANGING_ENTITY_PACKET:
-                    // Known Minecraft 3DS 1.10 bug: malformed AddHangingEntityPacket throws ArrayIndexOutOfBoundsException.
-                    // Safely ignore without console spam or disconnecting the player.
                     if (config.isDebugPackets()) {
                         logger.info("[MiniSMPBridge] Ignored 3DS AddHangingEntityPacket (0x10) from " + username);
                     }
@@ -706,4 +716,4 @@ public final class BridgeSession {
         }
         onClosed.run();
     }
-}
+            }
