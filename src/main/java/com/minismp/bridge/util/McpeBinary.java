@@ -144,11 +144,37 @@ public final class McpeBinary {
         buf.writeLongLE(uuid.getLeastSignificantBits());
     }
 
+    public static boolean hasZlibHeader(byte[] data, int offset) {
+        if (data.length - offset < 2) {
+            return false;
+        }
+        int cmf = data[offset] & 0xFF;
+        int flg = data[offset + 1] & 0xFF;
+        return (cmf & 0x0F) == 8 && (cmf * 256 + flg) % 31 == 0;
+    }
+
     public static byte[] inflate(byte[] compressed, int maxOutputBytes) throws DataFormatException {
-        Inflater inflater = new Inflater();
+        if (hasZlibHeader(compressed, 0)) {
+            return inflateWithMode(compressed, 0, compressed.length, false, maxOutputBytes);
+        }
         try {
-            inflater.setInput(compressed);
-            ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(compressed.length * 2, 16384));
+            return inflateWithMode(compressed, 0, compressed.length, true, maxOutputBytes);
+        } catch (DataFormatException rawErr) {
+            if (compressed.length > 2 && (compressed[0] & 0xFF) < 0x80) {
+                if (hasZlibHeader(compressed, 1)) {
+                    return inflateWithMode(compressed, 1, compressed.length - 1, false, maxOutputBytes);
+                }
+                return inflateWithMode(compressed, 1, compressed.length - 1, true, maxOutputBytes);
+            }
+            throw rawErr;
+        }
+    }
+
+    private static byte[] inflateWithMode(byte[] data, int offset, int length, boolean nowrap, int maxOutputBytes) throws DataFormatException {
+        Inflater inflater = new Inflater(nowrap);
+        try {
+            inflater.setInput(data, offset, length);
+            ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(length * 2, 16384));
             byte[] scratch = SCRATCH.get();
             int total = 0;
             while (!inflater.finished()) {
@@ -204,7 +230,7 @@ public final class McpeBinary {
             framed.readBytes(raw);
             byte[] compressed = deflate(raw, compressionLevel);
             ByteBuf out = Unpooled.buffer(1 + compressed.length);
-            out.writeByte(McpeProtocol.BATCH_PACKET);
+            out.writeByte(McpeProtocol.RAKNET_GAME_PACKET_WRAPPER);
             out.writeBytes(compressed);
             return out;
         } finally {
