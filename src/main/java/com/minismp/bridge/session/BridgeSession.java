@@ -67,6 +67,9 @@ public final class BridgeSession {
     private volatile float posZ = 0.0f;
     private volatile float yaw = 0.0f;
     private volatile float pitch = 0.0f;
+    private volatile float currentHealth = 20.0f;
+    private volatile float currentHunger = 20.0f;
+    private volatile float currentMoveSpeed = 0.10f;
     private volatile boolean spawned = false;
 
     public BridgeSession(RakChildChannel rakChannel, EventLoopGroup tcpGroup,
@@ -88,7 +91,6 @@ public final class BridgeSession {
         }
         int header = content.readUnsignedByte();
         if (header == 0x00) {
-            // RakNet connected ping
             return;
         }
         if (header == McpeProtocol.RAKNET_GAME_PACKET_WRAPPER || header == 0xff) {
@@ -135,11 +137,6 @@ public final class BridgeSession {
         }
     }
 
-    /**
-     * Safely decodes an MCPE 1.1.5 packet.
-     * Catches IndexOutOfBoundsException (including ArrayIndexOutOfBoundsException) from malformed
-     * 3DS 1.10 AddHangingEntityPacket (0x10) or unknown 3DS packets so they never spam the console or disconnect the player.
-     */
     private void handleMcpePacketSafely(ByteBuf buf) {
         if (!buf.isReadable()) {
             return;
@@ -239,15 +236,13 @@ public final class BridgeSession {
 
         logger.info("[MiniSMPBridge] 3DS player '" + username + "' connecting (protocol " + clientProtocol + ")");
 
-        // 1. Send PlayStatus LOGIN_SUCCESS
         sendPlayStatus(McpeProtocol.PLAY_STATUS_LOGIN_SUCCESS);
 
-        // 2. Send empty ResourcePacksInfoPacket
         ByteBuf rpInfo = Unpooled.buffer(8);
         rpInfo.writeByte(McpeProtocol.RESOURCE_PACKS_INFO_PACKET);
-        rpInfo.writeBoolean(false); // mustAccept
-        rpInfo.writeShortLE(0);     // behaviourPackCount
-        rpInfo.writeShortLE(0);     // resourcePackCount
+        rpInfo.writeBoolean(false);
+        rpInfo.writeShortLE(0);
+        rpInfo.writeShortLE(0);
         sendMcpePacket(rpInfo, true);
     }
 
@@ -275,12 +270,12 @@ public final class BridgeSession {
     }
 
     private void handleMcpeMovePlayer(ByteBuf buf) {
-        McpeBinary.readVarLong(buf); // entityRuntimeId
+        McpeBinary.readVarLong(buf);
         float[] vec = McpeBinary.readVector3f(buf);
         float p = buf.readFloatLE();
         float y = buf.readFloatLE();
-        buf.readFloatLE(); // headYaw
-        buf.readByte();    // mode
+        buf.readFloatLE();
+        buf.readByte();
         boolean onGround = buf.readBoolean();
 
         this.posX = vec[0];
@@ -291,7 +286,7 @@ public final class BridgeSession {
 
         if (javaState == JavaState.PLAY && spawned && javaChannel != null && javaChannel.isActive()) {
             ByteBuf pkt = Unpooled.buffer(40);
-            JavaBinary.writeVarInt(pkt, 0x0E); // Serverbound PlayerPositionAndLook (1.12.2)
+            JavaBinary.writeVarInt(pkt, 0x0E);
             pkt.writeDouble(this.posX);
             pkt.writeDouble(this.posY);
             pkt.writeDouble(this.posZ);
@@ -305,19 +300,19 @@ public final class BridgeSession {
     private void handleMcpeText(ByteBuf buf) {
         byte type = buf.readByte();
         if (type == McpeProtocol.TEXT_CHAT) {
-            McpeBinary.readString(buf); // source
+            McpeBinary.readString(buf);
         }
         String message = McpeBinary.readString(buf);
         if (javaState == JavaState.PLAY && javaChannel != null && javaChannel.isActive() && !message.isEmpty()) {
             ByteBuf pkt = Unpooled.buffer(message.length() + 8);
-            JavaBinary.writeVarInt(pkt, 0x02); // Serverbound ChatMessage (1.12.2)
+            JavaBinary.writeVarInt(pkt, 0x02);
             JavaBinary.writeString(pkt, message.length() > 256 ? message.substring(0, 256) : message);
             javaChannel.writeAndFlush(pkt);
         }
     }
 
     private void handleMcpePlayerAction(ByteBuf buf) {
-        McpeBinary.readVarLong(buf); // entityRuntimeId
+        McpeBinary.readVarLong(buf);
         int action = McpeBinary.readVarInt(buf);
         int[] coords = McpeBinary.readBlockCoords(buf);
         int face = McpeBinary.readVarInt(buf);
@@ -327,16 +322,16 @@ public final class BridgeSession {
         }
         int javaStatus;
         if (action == 0) {
-            javaStatus = 0; // START_DESTROY_BLOCK
+            javaStatus = 0;
         } else if (action == 1) {
-            javaStatus = 1; // ABORT_DESTROY_BLOCK
+            javaStatus = 1;
         } else if (action == 2) {
-            javaStatus = 2; // STOP_DESTROY_BLOCK
+            javaStatus = 2;
         } else {
             return;
         }
         ByteBuf pkt = Unpooled.buffer(16);
-        JavaBinary.writeVarInt(pkt, 0x14); // Serverbound PlayerDigging (1.12.2)
+        JavaBinary.writeVarInt(pkt, 0x14);
         JavaBinary.writeVarInt(pkt, javaStatus);
         JavaBinary.writePosition(pkt, coords[0], coords[1], coords[2]);
         pkt.writeByte(face & 0xFF);
@@ -345,7 +340,7 @@ public final class BridgeSession {
 
     private void handleMcpeUseItem(ByteBuf buf) {
         int[] coords = McpeBinary.readBlockCoords(buf);
-        McpeBinary.readUnsignedVarInt(buf); // interactBlockId
+        McpeBinary.readUnsignedVarInt(buf);
         int face = McpeBinary.readVarInt(buf);
         float[] faceVec = McpeBinary.readVector3f(buf);
 
@@ -353,10 +348,10 @@ public final class BridgeSession {
             return;
         }
         ByteBuf pkt = Unpooled.buffer(28);
-        JavaBinary.writeVarInt(pkt, 0x1F); // Serverbound PlayerBlockPlacement (1.12.2)
+        JavaBinary.writeVarInt(pkt, 0x1F);
         JavaBinary.writePosition(pkt, coords[0], coords[1], coords[2]);
         JavaBinary.writeVarInt(pkt, face);
-        JavaBinary.writeVarInt(pkt, 0); // Main hand
+        JavaBinary.writeVarInt(pkt, 0);
         pkt.writeFloat(Math.max(0f, Math.min(1f, faceVec[0])));
         pkt.writeFloat(Math.max(0f, Math.min(1f, faceVec[1])));
         pkt.writeFloat(Math.max(0f, Math.min(1f, faceVec[2])));
@@ -367,8 +362,8 @@ public final class BridgeSession {
         int action = McpeBinary.readVarInt(buf);
         if (action == 1 && javaState == JavaState.PLAY && javaChannel != null && javaChannel.isActive()) {
             ByteBuf pkt = Unpooled.buffer(4);
-            JavaBinary.writeVarInt(pkt, 0x1D); // Serverbound Animation (1.12.2)
-            JavaBinary.writeVarInt(pkt, 0);    // Main hand
+            JavaBinary.writeVarInt(pkt, 0x1D);
+            JavaBinary.writeVarInt(pkt, 0);
             javaChannel.writeAndFlush(pkt);
         }
     }
@@ -376,8 +371,8 @@ public final class BridgeSession {
     private void handleMcpeRespawn() {
         if (javaState == JavaState.PLAY && javaChannel != null && javaChannel.isActive()) {
             ByteBuf pkt = Unpooled.buffer(4);
-            JavaBinary.writeVarInt(pkt, 0x03); // Serverbound ClientStatus (1.12.2)
-            JavaBinary.writeVarInt(pkt, 0);    // Perform Respawn
+            JavaBinary.writeVarInt(pkt, 0x03);
+            JavaBinary.writeVarInt(pkt, 0);
             javaChannel.writeAndFlush(pkt);
         }
     }
@@ -405,7 +400,7 @@ public final class BridgeSession {
             if (!f.isSuccess()) {
                 logger.warning("[MiniSMPBridge] Could not connect 3DS player '" + username + "' to "
                         + config.getTargetHost() + ":" + config.getTargetPort() + " - " + f.cause().getMessage());
-                sendDisconnect("§cFailed to connect to Paper server.");
+                sendDisconnect("\u00a7cFailed to connect to Paper server.");
                 close();
                 return;
             }
@@ -415,7 +410,6 @@ public final class BridgeSession {
     }
 
     private void sendJavaHandshakeAndLogin() {
-        // 1. Handshake (0x00, protocol 340, nextState=2)
         ByteBuf handshake = Unpooled.buffer(32);
         JavaBinary.writeVarInt(handshake, 0x00);
         JavaBinary.writeVarInt(handshake, 340);
@@ -424,7 +418,6 @@ public final class BridgeSession {
         JavaBinary.writeVarInt(handshake, 2);
         javaChannel.write(handshake);
 
-        // 2. Login Start (0x00, username)
         ByteBuf loginStart = Unpooled.buffer(32);
         JavaBinary.writeVarInt(loginStart, 0x00);
         JavaBinary.writeString(loginStart, username);
@@ -471,8 +464,8 @@ public final class BridgeSession {
             int threshold = JavaBinary.readVarInt(msg);
             compressionState.setThreshold(threshold);
         } else if (packetId == 0x02) {
-            JavaBinary.readString(msg); // UUID string
-            JavaBinary.readString(msg); // Username
+            JavaBinary.readString(msg);
+            JavaBinary.readString(msg);
             javaState = JavaState.PLAY;
         } else if (packetId == 0x00) {
             String reason = JavaBinary.jsonChatToLegacy(JavaBinary.readString(msg));
@@ -486,7 +479,7 @@ public final class BridgeSession {
             case 0x1F: { // KeepAlive (Clientbound 1.12.2)
                 long id = msg.readLong();
                 ByteBuf reply = Unpooled.buffer(12);
-                JavaBinary.writeVarInt(reply, 0x0B); // KeepAlive (Serverbound 1.12.2)
+                JavaBinary.writeVarInt(reply, 0x0B);
                 reply.writeLong(id);
                 javaChannel.writeAndFlush(reply);
                 break;
@@ -497,6 +490,20 @@ public final class BridgeSession {
                 this.dimension = msg.readInt();
                 int difficulty = msg.readUnsignedByte();
                 sendMcpeStartGame(difficulty);
+                break;
+            }
+            case 0x2C: { // PlayerAbilities (Clientbound 1.12.2)
+                if (msg.readableBytes() >= 9) {
+                    msg.readByte(); // flags
+                    msg.readFloat(); // flyingSpeed
+                    float walkSpeed = msg.readFloat();
+                    if (walkSpeed > 0.0f && walkSpeed <= 1.0f) {
+                        this.currentMoveSpeed = walkSpeed;
+                    } else {
+                        this.currentMoveSpeed = 0.10f;
+                    }
+                    sendMcpeAttributes();
+                }
                 break;
             }
             case 0x2F: { // PlayerPositionAndLook (Clientbound 1.12.2)
@@ -514,14 +521,14 @@ public final class BridgeSession {
                 this.yaw = (flags & 0x08) != 0 ? this.yaw + yRot : yRot;
                 this.pitch = (flags & 0x10) != 0 ? this.pitch + xRot : xRot;
 
-                // Acknowledge teleport to Paper
                 ByteBuf confirm = Unpooled.buffer(8);
-                JavaBinary.writeVarInt(confirm, 0x00); // TeleportConfirm
+                JavaBinary.writeVarInt(confirm, 0x00);
                 JavaBinary.writeVarInt(confirm, teleportId);
                 javaChannel.writeAndFlush(confirm);
 
                 if (!spawned) {
                     spawned = true;
+                    sendMcpeAttributes();
                     sendPlayStatus(McpeProtocol.PLAY_STATUS_PLAYER_SPAWN);
                 }
                 sendMcpeMovePlayer(this.entityId, this.posX, this.posY + EYE_HEIGHT, this.posZ, this.yaw, this.pitch, (byte) 2);
@@ -579,10 +586,14 @@ public final class BridgeSession {
             }
             case 0x41: { // UpdateHealth
                 float health = msg.readFloat();
+                int food = msg.readableBytes() >= 1 ? JavaBinary.readVarInt(msg) : 20;
+                this.currentHealth = Math.max(0.0f, Math.min(20.0f, health));
+                this.currentHunger = Math.max(0.0f, Math.min(20.0f, (float) food));
                 ByteBuf out = Unpooled.buffer(8);
                 out.writeByte(McpeProtocol.SET_HEALTH_PACKET);
-                McpeBinary.writeUnsignedVarInt(out, Math.max(0, Math.round(health)));
+                McpeBinary.writeUnsignedVarInt(out, Math.max(0, Math.round(this.currentHealth)));
                 sendMcpePacket(out, false);
+                sendMcpeAttributes();
                 break;
             }
             case 0x35: { // Respawn
@@ -591,10 +602,11 @@ public final class BridgeSession {
                 out.writeByte(McpeProtocol.RESPAWN_PACKET);
                 McpeBinary.writeVector3f(out, posX, posY + EYE_HEIGHT, posZ);
                 sendMcpePacket(out, true);
+                sendMcpeAttributes();
                 break;
             }
             case 0x47: { // TimeUpdate
-                msg.readLong(); // worldAge
+                msg.readLong();
                 long timeOfDay = msg.readLong();
                 ByteBuf out = Unpooled.buffer(8);
                 out.writeByte(McpeProtocol.SET_TIME_PACKET);
@@ -623,20 +635,20 @@ public final class BridgeSession {
         McpeBinary.writeVector3f(out, posX, posY + EYE_HEIGHT, posZ);
         out.writeFloatLE(pitch);
         out.writeFloatLE(yaw);
-        McpeBinary.writeVarInt(out, 0); // seed
+        McpeBinary.writeVarInt(out, 0);
         McpeBinary.writeVarInt(out, dimension == -1 ? 1 : (dimension == 1 ? 2 : 0));
-        McpeBinary.writeVarInt(out, 1); // infinite generator
+        McpeBinary.writeVarInt(out, 1);
         McpeBinary.writeVarInt(out, gamemode);
         McpeBinary.writeVarInt(out, difficulty);
         McpeBinary.writeBlockCoords(out, (int) posX, (int) posY, (int) posZ);
-        out.writeBoolean(true); // hasAchievementsDisabled
-        McpeBinary.writeVarInt(out, -1); // dayCycleStopTime
-        out.writeBoolean(false); // eduMode
-        out.writeFloatLE(0.0f);  // rainLevel
-        out.writeFloatLE(0.0f);  // lightningLevel
-        out.writeBoolean(true);  // commandsEnabled
-        out.writeBoolean(false); // isTexturePacksRequired
-        McpeBinary.writeUnsignedVarInt(out, 0); // ruleDatas
+        out.writeBoolean(true);
+        McpeBinary.writeVarInt(out, -1);
+        out.writeBoolean(false);
+        out.writeFloatLE(0.0f);
+        out.writeFloatLE(0.0f);
+        out.writeBoolean(true);
+        out.writeBoolean(false);
+        McpeBinary.writeUnsignedVarInt(out, 0);
         McpeBinary.writeString(out, "");
         McpeBinary.writeString(out, "MiniSMP");
         McpeBinary.writeString(out, "");
@@ -646,6 +658,28 @@ public final class BridgeSession {
         radius.writeByte(McpeProtocol.CHUNK_RADIUS_UPDATED_PACKET);
         McpeBinary.writeVarInt(radius, config.getMaxViewDistance());
         sendMcpePacket(radius, false);
+
+        sendMcpeAttributes();
+    }
+
+    private void sendMcpeAttributes() {
+        ByteBuf out = Unpooled.buffer(160);
+        out.writeByte(McpeProtocol.UPDATE_ATTRIBUTES_PACKET);
+        McpeBinary.writeVarLong(out, entityId);
+        McpeBinary.writeUnsignedVarInt(out, 4);
+        writeAttribute(out, 0.0f, Float.MAX_VALUE, currentMoveSpeed, 0.10f, "minecraft:movement");
+        writeAttribute(out, 0.0f, 20.0f, currentHealth, 20.0f, "minecraft:health");
+        writeAttribute(out, 0.0f, 20.0f, currentHunger, 20.0f, "minecraft:player.hunger");
+        writeAttribute(out, 0.0f, 20.0f, 5.0f, 5.0f, "minecraft:player.saturation");
+        sendMcpePacket(out, false);
+    }
+
+    private static void writeAttribute(ByteBuf out, float min, float max, float val, float def, String name) {
+        out.writeFloatLE(min);
+        out.writeFloatLE(max);
+        out.writeFloatLE(val);
+        out.writeFloatLE(def);
+        McpeBinary.writeString(out, name);
     }
 
     private void sendMcpeMovePlayer(long runtimeId, float x, float y, float z, float yaw, float pitch, byte mode) {
@@ -716,4 +750,4 @@ public final class BridgeSession {
         }
         onClosed.run();
     }
-            }
+}
