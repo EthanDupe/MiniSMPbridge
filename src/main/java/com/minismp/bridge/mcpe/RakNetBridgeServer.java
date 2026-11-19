@@ -7,10 +7,12 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.DatagramPacket;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import org.cloudburstmc.netty.channel.raknet.RakChannelFactory;
 import org.cloudburstmc.netty.channel.raknet.RakChildChannel;
@@ -58,6 +60,25 @@ public final class RakNetBridgeServer {
                 .option(RakChannelOption.RAK_MAX_CONNECTIONS, config.getMaxPlayers())
                 .option(RakChannelOption.RAK_ADVERTISEMENT, buildAdvertisement(initialOnlinePlayers))
                 .childOption(RakChannelOption.RAK_ORDERING_CHANNELS, 16)
+.handler(new ChannelInitializer<RakServerChannel>() {
+    @Override
+                    protected void initChannel(RakServerChannel ch) {
+                        ch.pipeline().addFirst("minismp-udp-debug", new ChannelInboundHandlerAdapter() {
+                            @Override
+                            public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+                                if (config.isDebugPackets() && msg instanceof DatagramPacket) {
+                                    DatagramPacket pkt = (DatagramPacket) msg;
+                                    ByteBuf content = pkt.content();
+                                    int firstId = content.isReadable() ? content.getUnsignedByte(content.readerIndex()) : -1;
+                                    logger.info("[MiniSMPBridge] Raw UDP from " + pkt.sender()
+                                            + " len=" + content.readableBytes()
+                                            + " id=0x" + Integer.toHexString(firstId));
+                                }
+                                super.channelRead(ctx, msg);
+                            }
+                        });
+                    }
+                })
                 .childHandler(new ChannelInitializer<RakChildChannel>() {
                     @Override
                     protected void initChannel(RakChildChannel ch) {
