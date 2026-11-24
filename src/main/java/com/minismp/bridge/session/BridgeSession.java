@@ -29,6 +29,8 @@ import org.cloudburstmc.netty.channel.raknet.packet.RakMessage;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Logger;
@@ -41,9 +43,18 @@ public final class BridgeSession {
 
     private static final Gson GSON = new Gson();
     private static final float EYE_HEIGHT = 1.62f;
+    private static final int MAX_TRACKED_ENTITIES = 256;
 
     private enum JavaState {
         HANDSHAKING, LOGIN, PLAY
+    }
+
+    private static final class TrackedEntity {
+        float x, y, z;
+        float vx, vy, vz;
+        float yaw, pitch;
+        boolean isPendingItem;
+        boolean spawnedOnMcpe;
     }
 
     private final RakChildChannel rakChannel;
@@ -83,6 +94,9 @@ public final class BridgeSession {
 
     // Lightweight 36-slot player inventory cache (0..8 = hotbar, 9..35 = main)
     private final int[][] inventory = new int[36][3];
+
+    // Lightweight tracked entities (dropped items, mobs, other players) - accessed on Java Netty event loop
+    private final Map<Integer, TrackedEntity> entities = new HashMap<>();
 
     public BridgeSession(RakChildChannel rakChannel, EventLoopGroup tcpGroup,
                          BridgeConfig config, Logger logger, Runnable onClosed) {
@@ -186,6 +200,9 @@ public final class BridgeSession {
                     break;
                 case McpeProtocol.MOB_EQUIPMENT_PACKET:
                     handleMcpeMobEquipment(buf);
+                    break;
+                case McpeProtocol.DROP_ITEM_PACKET:
+                    handleMcpeDropItem();
                     break;
                 case McpeProtocol.INTERACT_PACKET:
                     handleMcpeInteract(buf);
@@ -340,7 +357,6 @@ public final class BridgeSession {
         boolean matchedStart = (coords[0] == lastBreakX && coords[1] == lastBreakY && coords[2] == lastBreakZ);
         int face = matchedStart ? lastBreakFace : 1;
         if (!matchedStart) {
-            // Instant-break blocks (grass/flowers/torches) or Creative mode
             sendJavaDigging(0, coords[0], coords[1], coords[2], face);
         }
         sendJavaDigging(2, coords[0], coords[1], coords[2], face);
@@ -375,22 +391,17 @@ public final class BridgeSession {
             lastBreakZ = coords[2];
             lastBreakFace = (face >= 0 && face <= 5) ? face : 1;
             sendJavaDigging(0, coords[0], coords[1], coords[2], lastBreakFace);
-            if (config.isDebugPackets()) {
-                logger.info("[MiniSMPBridge] StartBreak (" + coords[0] + "," + coords[1] + "," + coords[2] + ") face=" + lastBreakFace);
-            }
         } else if (action == 1) { // ACTION_ABORT_BREAK
             if (lastBreakX != Integer.MIN_VALUE) {
                 sendJavaDigging(1, lastBreakX, lastBreakY, lastBreakZ, lastBreakFace);
                 lastBreakX = Integer.MIN_VALUE;
             }
-        } else if (action == 2) { // ACTION_STOP_BREAK
-            // In MCPE 1.1.x, ACTION_STOP_BREAK is sent with (0,0,0) right alongside RemoveBlockPacket.
-            // Do NOT send STOP_DESTROY_BLOCK(0,0,0) and do NOT clear lastBreakX here!
+        } else if (action == 2) { // ACTION_STOP_BREAK (sent with 0,0,0 alongside RemoveBlockPacket)
+            // Intentionally ignored so RemoveBlockPacket finishes the break cleanly.
         } else if (action >= 9 && action <= 12) {
-            // Sprint / Sneak -> Java EntityAction (0x15)
             int javaAction = action == 9 ? 3 : (action == 10 ? 4 : (action == 11 ? 0 : 1));
             ByteBuf pkt = Unpooled.buffer(12);
-            JavaBinary.writeVarInt(pkt, 0x15);
+            JavaBinary.writeVarInt(pkt, 0x15); // EntityAction
             JavaBinary.writeVarInt(pkt, entityId);
             JavaBinary.writeVarInt(pkt, javaAction);
             JavaBinary.writeVarInt(pkt, 0);
@@ -441,6 +452,12 @@ public final class BridgeSession {
         }
     }
 
+    private void handleMcpeDropItem() {
+        if (javaState == JavaState.PLAY && javaChannel != null && javaChannel.isActive()) {
+            sendJavaDigging(4, 0, 0, 0, 0); // Drop single item
+        }
+    }
+
     private void handleMcpeInteract(ByteBuf buf) {
         int action = buf.readUnsignedByte();
         long target = McpeBinary.readVarLong(buf);
@@ -451,9 +468,9 @@ public final class BridgeSession {
             ByteBuf pkt = Unpooled.buffer(12);
             JavaBinary.writeVarInt(pkt, 0x0A); // Serverbound UseEntity (1.12.2)
             JavaBinary.writeVarInt(pkt, (int) target);
-            JavaBinary.writeVarInt(pkt, action == 1 ? 1 : 0); // 1 = Attack, 0 = Interact
+            JavaBinary.writeVarInt(pkt, action == 1 ? 1 : 0);
             if (action == 2) {
-                JavaBinary.writeVarInt(pkt, 0); // Main hand
+                JavaBinary.writeVarInt(pkt, 0);
             }
             javaChannel.writeAndFlush(pkt);
         }
@@ -464,7 +481,7 @@ public final class BridgeSession {
         if (action == 1 && javaState == JavaState.PLAY && javaChannel != null && javaChannel.isActive()) {
             ByteBuf pkt = Unpooled.buffer(4);
             JavaBinary.writeVarInt(pkt, 0x1D); // Serverbound Animation (1.12.2)
-            JavaBinary.writeVarInt(pkt, 0);    // Main hand
+            JavaBinary.writeVarInt(pkt, 0);
             javaChannel.writeAndFlush(pkt);
         }
     }
@@ -473,7 +490,7 @@ public final class BridgeSession {
         if (javaState == JavaState.PLAY && javaChannel != null && javaChannel.isActive()) {
             ByteBuf pkt = Unpooled.buffer(4);
             JavaBinary.writeVarInt(pkt, 0x03); // Serverbound ClientStatus (1.12.2)
-            JavaBinary.writeVarInt(pkt, 0);    // Perform Respawn
+            JavaBinary.writeVarInt(pkt, 0);
             javaChannel.writeAndFlush(pkt);
         }
     }
@@ -534,10 +551,10 @@ public final class BridgeSession {
         JavaBinary.writeVarInt(pkt, 0x04); // Serverbound ClientSettings (1.12.2)
         JavaBinary.writeString(pkt, "en_US");
         pkt.writeByte(config.getMaxViewDistance());
-        JavaBinary.writeVarInt(pkt, 0);    // Chat mode: enabled
-        pkt.writeBoolean(true);            // Chat colors
-        pkt.writeByte(0x7F);               // All skin parts visible
-        JavaBinary.writeVarInt(pkt, 1);    // Main hand: right
+        JavaBinary.writeVarInt(pkt, 0);
+        pkt.writeBoolean(true);
+        pkt.writeByte(0x7F);
+        JavaBinary.writeVarInt(pkt, 1);
         javaChannel.writeAndFlush(pkt);
     }
 
@@ -592,6 +609,170 @@ public final class BridgeSession {
 
     private void handleJavaPlayPacket(int packetId, ByteBuf msg) {
         switch (packetId) {
+            case 0x00: { // SpawnObject (Clientbound 1.12.2) - renders dropped items!
+                if (entities.size() >= MAX_TRACKED_ENTITIES) {
+                    break;
+                }
+                int eid = JavaBinary.readVarInt(msg);
+                JavaBinary.readUUID(msg);
+                int type = msg.readUnsignedByte();
+                double x = msg.readDouble();
+                double y = msg.readDouble();
+                double z = msg.readDouble();
+                msg.readByte(); // pitch
+                msg.readByte(); // yaw
+                msg.readInt();  // data
+                float vx = msg.readShort() / 8000.0f;
+                float vy = msg.readShort() / 8000.0f;
+                float vz = msg.readShort() / 8000.0f;
+
+                if (type == 2) { // Dropped Item Stack
+                    TrackedEntity e = new TrackedEntity();
+                    e.x = (float) x;
+                    e.y = (float) y;
+                    e.z = (float) z;
+                    e.vx = vx;
+                    e.vy = vy;
+                    e.vz = vz;
+                    e.isPendingItem = true;
+                    entities.put(eid, e);
+                }
+                break;
+            }
+            case 0x03: { // SpawnMob (Clientbound 1.12.2)
+                if (entities.size() >= MAX_TRACKED_ENTITIES) {
+                    break;
+                }
+                int eid = JavaBinary.readVarInt(msg);
+                JavaBinary.readUUID(msg);
+                int javaType = JavaBinary.readVarInt(msg);
+                double x = msg.readDouble();
+                double y = msg.readDouble();
+                double z = msg.readDouble();
+                float yRot = (msg.readByte() & 0xFF) * (360.0f / 256.0f);
+                float xRot = (msg.readByte() & 0xFF) * (360.0f / 256.0f);
+                msg.readByte(); // headPitch
+                float vx = msg.readShort() / 8000.0f;
+                float vy = msg.readShort() / 8000.0f;
+                float vz = msg.readShort() / 8000.0f;
+
+                int mcpeType = mapJavaMobTypeToMcpe(javaType);
+                if (mcpeType > 0) {
+                    TrackedEntity e = new TrackedEntity();
+                    e.x = (float) x;
+                    e.y = (float) y;
+                    e.z = (float) z;
+                    e.yaw = yRot;
+                    e.pitch = xRot;
+                    e.spawnedOnMcpe = true;
+                    entities.put(eid, e);
+                    sendMcpeAddEntity(eid, mcpeType, e.x, e.y, e.z, vx, vy, vz, yRot, xRot);
+                }
+                break;
+            }
+            case 0x05: { // SpawnPlayer (Clientbound 1.12.2)
+                if (entities.size() >= MAX_TRACKED_ENTITIES) {
+                    break;
+                }
+                int eid = JavaBinary.readVarInt(msg);
+                UUID playerUuid = JavaBinary.readUUID(msg);
+                double x = msg.readDouble();
+                double y = msg.readDouble();
+                double z = msg.readDouble();
+                float yRot = (msg.readByte() & 0xFF) * (360.0f / 256.0f);
+                float xRot = (msg.readByte() & 0xFF) * (360.0f / 256.0f);
+
+                TrackedEntity e = new TrackedEntity();
+                e.x = (float) x;
+                e.y = (float) y;
+                e.z = (float) z;
+                e.yaw = yRot;
+                e.pitch = xRot;
+                e.spawnedOnMcpe = true;
+                entities.put(eid, e);
+                sendMcpeAddPlayer(eid, playerUuid, "Player", e.x, e.y, e.z, yRot, xRot);
+                break;
+            }
+            case 0x3C: { // EntityMetadata (Clientbound 1.12.2) - completes dropped item spawn!
+                int eid = JavaBinary.readVarInt(msg);
+                TrackedEntity e = entities.get(eid);
+                if (e != null && e.isPendingItem && !e.spawnedOnMcpe) {
+                    int[] item = extractDroppedItemFromMetadata(msg);
+                    if (item != null && item[0] > 0) {
+                        e.isPendingItem = false;
+                        e.spawnedOnMcpe = true;
+                        sendMcpeAddItemEntity(eid, translateItem(item), e.x, e.y, e.z, e.vx, e.vy, e.vz);
+                    }
+                }
+                break;
+            }
+            case 0x26: { // EntityRelativeMove (Clientbound 1.12.2)
+                int eid = JavaBinary.readVarInt(msg);
+                TrackedEntity e = entities.get(eid);
+                if (e != null && e.spawnedOnMcpe) {
+                    e.x += msg.readShort() / 4096.0f;
+                    e.y += msg.readShort() / 4096.0f;
+                    e.z += msg.readShort() / 4096.0f;
+                    boolean onGround = msg.readBoolean();
+                    sendMcpeMoveEntity(eid, e.x, e.y, e.z, e.yaw, e.pitch, onGround);
+                }
+                break;
+            }
+            case 0x27: { // EntityLookAndRelativeMove (Clientbound 1.12.2)
+                int eid = JavaBinary.readVarInt(msg);
+                TrackedEntity e = entities.get(eid);
+                if (e != null && e.spawnedOnMcpe) {
+                    e.x += msg.readShort() / 4096.0f;
+                    e.y += msg.readShort() / 4096.0f;
+                    e.z += msg.readShort() / 4096.0f;
+                    e.yaw = (msg.readByte() & 0xFF) * (360.0f / 256.0f);
+                    e.pitch = (msg.readByte() & 0xFF) * (360.0f / 256.0f);
+                    boolean onGround = msg.readBoolean();
+                    sendMcpeMoveEntity(eid, e.x, e.y, e.z, e.yaw, e.pitch, onGround);
+                }
+                break;
+            }
+            case 0x4C: { // EntityTeleport (Clientbound 1.12.2)
+                int eid = JavaBinary.readVarInt(msg);
+                TrackedEntity e = entities.get(eid);
+                if (e != null && e.spawnedOnMcpe) {
+                    e.x = (float) msg.readDouble();
+                    e.y = (float) msg.readDouble();
+                    e.z = (float) msg.readDouble();
+                    e.yaw = (msg.readByte() & 0xFF) * (360.0f / 256.0f);
+                    e.pitch = (msg.readByte() & 0xFF) * (360.0f / 256.0f);
+                    boolean onGround = msg.readBoolean();
+                    sendMcpeMoveEntity(eid, e.x, e.y, e.z, e.yaw, e.pitch, onGround);
+                }
+                break;
+            }
+            case 0x4B: { // CollectItem (Clientbound 1.12.2)
+                int collected = JavaBinary.readVarInt(msg);
+                int collector = JavaBinary.readVarInt(msg);
+                TrackedEntity removed = entities.remove(collected);
+                if (removed != null && removed.spawnedOnMcpe) {
+                    ByteBuf out = Unpooled.buffer(16);
+                    out.writeByte(McpeProtocol.TAKE_ITEM_ENTITY_PACKET);
+                    McpeBinary.writeVarLong(out, collector);
+                    McpeBinary.writeVarLong(out, collected);
+                    sendMcpePacket(out, false);
+                }
+                break;
+            }
+            case 0x32: { // DestroyEntities (Clientbound 1.12.2)
+                int count = JavaBinary.readVarInt(msg);
+                for (int i = 0; i < count && msg.isReadable(); i++) {
+                    int eid = JavaBinary.readVarInt(msg);
+                    TrackedEntity removed = entities.remove(eid);
+                    if (removed != null && removed.spawnedOnMcpe) {
+                        ByteBuf out = Unpooled.buffer(12);
+                        out.writeByte(McpeProtocol.REMOVE_ENTITY_PACKET);
+                        McpeBinary.writeVarLong(out, eid);
+                        sendMcpePacket(out, false);
+                    }
+                }
+                break;
+            }
             case 0x1F: { // KeepAlive (Clientbound 1.12.2)
                 long id = msg.readLong();
                 ByteBuf reply = Unpooled.buffer(12);
@@ -612,7 +793,7 @@ public final class BridgeSession {
             case 0x2C: { // PlayerAbilities (Clientbound 1.12.2)
                 if (msg.readableBytes() >= 9) {
                     byte flags = msg.readByte();
-                    msg.readFloat(); // flyingSpeed
+                    msg.readFloat();
                     float walkSpeed = msg.readFloat();
                     this.isFlying = (flags & 0x02) != 0;
                     this.allowFlight = (flags & 0x04) != 0;
@@ -713,14 +894,17 @@ public final class BridgeSession {
             case 0x16: { // SetSlot (Clientbound 1.12.2)
                 int windowId = msg.readByte();
                 int javaSlot = msg.readShort();
-                if (windowId == 0) {
+                if (windowId == 0 || windowId == -2) {
                     try {
                         int[] item = translateItem(JavaBinary.readSlot(msg));
-                        int mcpeSlot = javaSlotToMcpeSlot(javaSlot);
+                        int mcpeSlot = (windowId == -2)
+                                ? (javaSlot >= 0 && javaSlot < 36 ? javaSlot : -1)
+                                : javaSlotToMcpeSlot(javaSlot);
                         if (mcpeSlot >= 0) {
                             inventory[mcpeSlot] = item;
                             if (spawned) {
                                 sendMcpeSetSlot(mcpeSlot, item);
+                                sendMcpeFullInventory();
                             }
                         }
                     } catch (Exception ignored) {
@@ -763,6 +947,7 @@ public final class BridgeSession {
             }
             case 0x35: { // Respawn
                 this.dimension = msg.readInt();
+                entities.clear();
                 ByteBuf out = Unpooled.buffer(16);
                 out.writeByte(McpeProtocol.RESPAWN_PACKET);
                 McpeBinary.writeVector3f(out, posX, posY + EYE_HEIGHT, posZ);
@@ -790,6 +975,130 @@ public final class BridgeSession {
             default:
                 break;
         }
+    }
+
+    private static int[] extractDroppedItemFromMetadata(ByteBuf msg) {
+        try {
+            while (msg.isReadable()) {
+                int index = msg.readUnsignedByte();
+                if (index == 0xFF) {
+                    break;
+                }
+                int type = JavaBinary.readVarInt(msg);
+                switch (type) {
+                    case 0: msg.readByte(); break;
+                    case 1: JavaBinary.readVarInt(msg); break;
+                    case 2: msg.readFloat(); break;
+                    case 3: JavaBinary.readString(msg); break;
+                    case 4: JavaBinary.readString(msg); break;
+                    case 5: {
+                        int[] slot = JavaBinary.readSlot(msg);
+                        if (index == 6) {
+                            return slot;
+                        }
+                        break;
+                    }
+                    case 6: msg.readBoolean(); break;
+                    case 7: msg.skipBytes(12); break;
+                    case 8: msg.readLong(); break;
+                    case 9: if (msg.readBoolean()) msg.readLong(); break;
+                    case 10: JavaBinary.readVarInt(msg); break;
+                    case 11: if (msg.readBoolean()) msg.skipBytes(16); break;
+                    case 12: JavaBinary.readVarInt(msg); break;
+                    default: return null;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private static int mapJavaMobTypeToMcpe(int javaType) {
+        switch (javaType) {
+            case 50: return 33; // Creeper
+            case 51: return 34; // Skeleton
+            case 52: return 35; // Spider
+            case 54: return 32; // Zombie
+            case 55: return 37; // Slime
+            case 56: return 41; // Ghast
+            case 57: return 36; // Zombie Pigman
+            case 58: return 38; // Enderman
+            case 59: return 40; // Cave Spider
+            case 60: return 39; // Silverfish
+            case 61: return 43; // Blaze
+            case 62: return 42; // Magma Cube
+            case 65: return 19; // Bat
+            case 66: return 45; // Witch
+            case 90: return 12; // Pig
+            case 91: return 13; // Sheep
+            case 92: return 11; // Cow
+            case 93: return 10; // Chicken
+            case 94: return 17; // Squid
+            case 95: return 14; // Wolf
+            case 96: return 16; // Mooshroom
+            case 98: return 22; // Ocelot
+            case 99: return 20; // Iron Golem
+            case 100: return 23; // Horse
+            case 101: return 18; // Rabbit
+            case 120: return 15; // Villager
+            default: return 0;
+        }
+    }
+
+    private void sendMcpeAddItemEntity(int eid, int[] item, float x, float y, float z, float vx, float vy, float vz) {
+        ByteBuf out = Unpooled.buffer(48);
+        out.writeByte(McpeProtocol.ADD_ITEM_ENTITY_PACKET);
+        McpeBinary.writeVarLong(out, eid);
+        McpeBinary.writeVarLong(out, eid);
+        McpeBinary.writeSlot(out, item[0], item[1], item[2]);
+        McpeBinary.writeVector3f(out, x, y, z);
+        McpeBinary.writeVector3f(out, vx, vy, vz);
+        sendMcpePacket(out, false);
+    }
+
+    private void sendMcpeAddEntity(int eid, int type, float x, float y, float z, float vx, float vy, float vz, float yaw, float pitch) {
+        ByteBuf out = Unpooled.buffer(64);
+        out.writeByte(McpeProtocol.ADD_ENTITY_PACKET);
+        McpeBinary.writeVarLong(out, eid);
+        McpeBinary.writeVarLong(out, eid);
+        McpeBinary.writeUnsignedVarInt(out, type);
+        McpeBinary.writeVector3f(out, x, y, z);
+        McpeBinary.writeVector3f(out, vx, vy, vz);
+        out.writeFloatLE(pitch * (256.0f / 360.0f));
+        out.writeFloatLE(yaw * (256.0f / 360.0f));
+        McpeBinary.writeUnsignedVarInt(out, 0); // attributes
+        McpeBinary.writeUnsignedVarInt(out, 0); // metadata
+        McpeBinary.writeUnsignedVarInt(out, 0); // links
+        sendMcpePacket(out, false);
+    }
+
+    private void sendMcpeAddPlayer(int eid, UUID playerUuid, String name, float x, float y, float z, float yaw, float pitch) {
+        ByteBuf out = Unpooled.buffer(96);
+        out.writeByte(McpeProtocol.ADD_PLAYER_PACKET);
+        McpeBinary.writeUUID(out, playerUuid);
+        McpeBinary.writeString(out, name);
+        McpeBinary.writeVarLong(out, eid);
+        McpeBinary.writeVarLong(out, eid);
+        McpeBinary.writeVector3f(out, x, y, z);
+        McpeBinary.writeVector3f(out, 0f, 0f, 0f);
+        out.writeFloatLE(pitch);
+        out.writeFloatLE(yaw);
+        out.writeFloatLE(yaw);
+        McpeBinary.writeSlot(out, 0, 0, 0);
+        McpeBinary.writeUnsignedVarInt(out, 0); // metadata
+        sendMcpePacket(out, false);
+    }
+
+    private void sendMcpeMoveEntity(int eid, float x, float y, float z, float yaw, float pitch, boolean onGround) {
+        ByteBuf out = Unpooled.buffer(32);
+        out.writeByte(McpeProtocol.MOVE_ENTITY_PACKET);
+        McpeBinary.writeVarLong(out, eid);
+        McpeBinary.writeVector3f(out, x, y, z);
+        out.writeByte((byte) (pitch / (360.0 / 256.0)));
+        out.writeByte((byte) (yaw / (360.0 / 256.0)));
+        out.writeByte((byte) (yaw / (360.0 / 256.0)));
+        out.writeByte(onGround ? 1 : 0);
+        sendMcpePacket(out, false);
     }
 
     private static int javaSlotToMcpeSlot(int javaSlot) {
@@ -834,7 +1143,7 @@ public final class BridgeSession {
         out.writeByte(McpeProtocol.CONTAINER_SET_SLOT_PACKET);
         out.writeByte(0); // window 0
         McpeBinary.writeVarInt(out, mcpeSlot);
-        McpeBinary.writeVarInt(out, mcpeSlot < 9 ? mcpeSlot : 0);
+        McpeBinary.writeVarInt(out, 0); // hotbarSlot = 0 (matching Nukkit-Retro PlayerInventory.sendSlot)
         McpeBinary.writeSlot(out, item[0], item[1], item[2]);
         out.writeByte(selectedHotbarSlot);
         sendMcpePacket(out, false);
@@ -852,7 +1161,7 @@ public final class BridgeSession {
         ByteBuf out = Unpooled.buffer(12);
         out.writeByte(McpeProtocol.ADVENTURE_SETTINGS_PACKET);
         McpeBinary.writeUnsignedVarInt(out, flags);
-        McpeBinary.writeUnsignedVarInt(out, 1); // Normal member permission
+        McpeBinary.writeUnsignedVarInt(out, 1);
         sendMcpePacket(out, false);
     }
 
@@ -973,6 +1282,7 @@ public final class BridgeSession {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
+        entities.clear();
         if (javaChannel != null && javaChannel.isOpen()) {
             javaChannel.close();
         }
