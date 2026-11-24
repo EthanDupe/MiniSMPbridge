@@ -101,6 +101,94 @@ public final class JavaBinary {
     }
 
     /**
+     * Reads a Java 1.12.2 Slot and returns {itemId, count, damage}, or {0, 0, 0} if empty.
+     * Safely skips any attached NBT compound tag.
+     */
+    public static int[] readSlot(ByteBuf buf) {
+        if (buf.readableBytes() < 2) {
+            return new int[]{0, 0, 0};
+        }
+        short itemId = buf.readShort();
+        if (itemId <= 0) {
+            return new int[]{0, 0, 0};
+        }
+        int count = buf.readByte() & 0xFF;
+        int damage = buf.readShort() & 0xFFFF;
+        skipRootNbt(buf);
+        return new int[]{itemId, count, damage};
+    }
+
+    private static void skipRootNbt(ByteBuf buf) {
+        if (!buf.isReadable()) {
+            return;
+        }
+        byte tagType = buf.readByte();
+        if (tagType == 0) {
+            return;
+        }
+        int nameLen = buf.readUnsignedShort();
+        buf.skipBytes(nameLen);
+        skipNbtPayload(buf, tagType, 0);
+    }
+
+    private static void skipNbtPayload(ByteBuf buf, byte type, int depth) {
+        if (depth > 32) {
+            throw new IllegalArgumentException("NBT nesting too deep");
+        }
+        switch (type) {
+            case 0: break;
+            case 1: buf.skipBytes(1); break;
+            case 2: buf.skipBytes(2); break;
+            case 3: buf.skipBytes(4); break;
+            case 4: buf.skipBytes(8); break;
+            case 5: buf.skipBytes(4); break;
+            case 6: buf.skipBytes(8); break;
+            case 7: {
+                int len = buf.readInt();
+                buf.skipBytes(len);
+                break;
+            }
+            case 8: {
+                int len = buf.readUnsignedShort();
+                buf.skipBytes(len);
+                break;
+            }
+            case 9: {
+                byte listType = buf.readByte();
+                int len = buf.readInt();
+                for (int i = 0; i < len; i++) {
+                    skipNbtPayload(buf, listType, depth + 1);
+                }
+                break;
+            }
+            case 10: {
+                while (buf.isReadable()) {
+                    byte childType = buf.readByte();
+                    if (childType == 0) {
+                        break;
+                    }
+                    int nameLen = buf.readUnsignedShort();
+                    buf.skipBytes(nameLen);
+                    skipNbtPayload(buf, childType, depth + 1);
+                }
+                break;
+            }
+            case 11: {
+                int len = buf.readInt();
+                buf.skipBytes(len * 4);
+                break;
+            }
+            case 12: {
+                int len = buf.readInt();
+                buf.skipBytes(len * 8);
+                break;
+            }
+            default:
+                throw new IllegalArgumentException("Unknown NBT tag type: " + type);
+        }
+    }
+
+    /**
      * Converts a Java 1.12.2 JSON chat component into legacy section-sign text for MCPE 1.1.5.
      */
     public static String jsonChatToLegacy(String json) {
