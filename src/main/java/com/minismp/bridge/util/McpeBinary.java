@@ -144,6 +144,45 @@ public final class McpeBinary {
         buf.writeLongLE(uuid.getLeastSignificantBits());
     }
 
+    /**
+     * Writes an MCPE 1.1.3/1.1.5 slot (matching Nukkit-Retro BinaryStream.putSlot).
+     */
+    public static void writeSlot(ByteBuf buf, int itemId, int count, int damage) {
+        if (itemId <= 0 || count <= 0) {
+            writeVarInt(buf, 0);
+            return;
+        }
+        writeVarInt(buf, itemId);
+        int auxValue = ((damage & 0x7FFF) << 8) | (count & 0xFF);
+        writeVarInt(buf, auxValue);
+        buf.writeShortLE(0); // NBT length
+        writeVarInt(buf, 0); // CanPlaceOn count
+        writeVarInt(buf, 0); // CanDestroy count
+    }
+
+    /**
+     * Skips an MCPE 1.1.3/1.1.5 slot in an incoming packet (e.g. MobEquipmentPacket).
+     */
+    public static void skipSlot(ByteBuf buf) {
+        int id = readVarInt(buf);
+        if (id <= 0) {
+            return;
+        }
+        readVarInt(buf); // auxValue
+        int nbtLen = buf.readShortLE() & 0xFFFF;
+        if (nbtLen > 0 && nbtLen <= buf.readableBytes()) {
+            buf.skipBytes(nbtLen);
+        }
+        int canPlaceOn = readVarInt(buf);
+        for (int i = 0; i < canPlaceOn && buf.isReadable(); i++) {
+            readString(buf);
+        }
+        int canDestroy = readVarInt(buf);
+        for (int i = 0; i < canDestroy && buf.isReadable(); i++) {
+            readString(buf);
+        }
+    }
+
     public static boolean hasZlibHeader(byte[] data, int offset) {
         if (data.length - offset < 2) {
             return false;
@@ -216,10 +255,6 @@ public final class McpeBinary {
         }
     }
 
-    /**
-     * Wraps a single encoded MCPE packet (already containing its packet ID byte)
-     * into a 0xfe BatchPacket payload ready for RakNet transmission.
-     */
     public static ByteBuf wrapBatch(ByteBuf singlePacket, int compressionLevel) {
         int len = singlePacket.readableBytes();
         ByteBuf framed = Unpooled.buffer(len + 5);
